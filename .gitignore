@@ -1,0 +1,13 @@
+.*
+*.zip
+nohup.output
+checkpoints/
+checkpoints_save1/
+log/
+log_pre/
+dataset/
+results/
+results_save1/
+basic_time_series_datasets/
+paper_and_notes/
+**__pycache__**
