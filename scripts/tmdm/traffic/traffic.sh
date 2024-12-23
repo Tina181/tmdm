@@ -10,12 +10,12 @@ python runner9_NS_transformer.py \
         --label_len 48 \
         --pred_len 192 \
         --train_epochs 200 \
-        --gpu 1 \
+        --gpu 6 \
         --features 'M' \
         --n_heads 8 \
         --enc_in '862' \
         --dec_in '862' \
         --c_out '862' \
-        --timesteps '100' \
-        --diffusion_steps '100' \
-        --test_batch_size '1'
+        --timesteps '1000' \
+        --diffusion_steps '1000' \
+        --test_batch_size '2'

@@ -31,21 +31,23 @@
 #   --itr 1
 
 # TODO change: gpu enc_in dec_in c_out
-# using this will out of memory because timesteps=1000
 python runner9_NS_transformer.py \
-        --model_id 'RES_Electricity_96_192' \
-        --model 'RES_Electricity_96_192' \
+        --model_id 'RES_Electricity_96_192_100diffusion' \
+        --model 'RES_Electricity_96_192_100diffusion' \
         --root_path './dataset/electricity' \
         --data_path 'electricity.csv' \
         --seq_len 96 \
         --label_len 48 \
         --pred_len 192 \
         --train_epochs 200 \
-        --gpu 5 \
+        --gpu 6 \
         --features 'M' \
         --n_heads 8 \
         --enc_in '321' \
         --dec_in '321' \
         --c_out '321' \
+        --timesteps '1000' \
+        --diffusion_steps '1000' \
+        --test_batch_size '4' \
         --use_res_diffusion \
 

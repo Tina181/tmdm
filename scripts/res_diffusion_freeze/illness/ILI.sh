@@ -1,12 +1,13 @@
 # TODO change: gpu enc_in dec_in c_out
 # the sequence length for ILI is set to 36 others: 96
-k_cond=1
 label_len=16
-k_cond_schedule='linear'
+# k_cond_schedule='linear'
+# add --freeze_cond_model if want to freeze the cond model
+# if only use the pretrained model , use --freeze_cond_model_path
 
 python runner9_NS_transformer.py \
-        --model_id "RES_ILI_36_36_kcond_$k_cond_schedule" \
-        --model "RES_ILI_36_36_kcond_$k_cond_schedule" \
+        --model_id "Freeze_RES_ILI_36_36" \
+        --model "iTransformer" \
         --root_path './dataset/illness' \
         --data_path 'national_illness.csv' \
         --seq_len 36 \
@@ -21,5 +22,5 @@ python runner9_NS_transformer.py \
         --c_out '7' \
         --patience 100 \
         --use_res_diffusion \
-        --k_cond $k_cond \
-> log/RES_ILI_36_36_large_model_label_len_${label_len}_kcond_schedule_${k_cond_schedule}_k_cond_$k_cond.log 2>&1 &
+        --freeze_cond_model_path 'checkpoints_former/ILI_36_36_model_iTransformer_custom_ftM_sl36_ll16_pl36_dm512_nh8_el2_dl1_df2048_fc1_ebtimeF_dtTrue_test_projection/checkpoint.pth' \
+        --freeze_cond_model \

@@ -31,7 +31,6 @@
 #   --itr 1
 
 # TODO change: gpu enc_in dec_in c_out
-# using this will out of memory because timesteps=1000
 python runner9_NS_transformer.py \
         --model_id 'RES_Electricity_96_192' \
         --model 'RES_Electricity_96_192' \
@@ -47,5 +46,8 @@ python runner9_NS_transformer.py \
         --enc_in '321' \
         --dec_in '321' \
         --c_out '321' \
+        --timesteps '100' \
+        --diffusion_steps '100' \
+        --test_batch_size '4' \
         --use_res_diffusion \
 

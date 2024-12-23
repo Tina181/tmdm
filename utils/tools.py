@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
+import math
 
 plt.switch_backend('agg')
 
@@ -88,7 +89,25 @@ def visual(true, preds=None, name='./pic/test.pdf'):
     plt.legend()
     plt.savefig(name, bbox_inches='tight')
 
-def plot(target, forecast, prediction_length=192, dim=16, prediction_intervals=(50.0, 90.0), color='g', fname=None):
+def visual_1(true, preds=None, name=None,  dim=6):
+    """
+    Results visualization
+    """
+    col = 3
+    row = math.ceil(dim / col)
+    fig, axs = plt.subplots(row, col, figsize=(16, 12))
+    for d in range(dim):
+        axs[d // col, d % col].plot(preds[:, d], label='Prediction', linewidth=2)
+        axs[d // col, d % col].plot(true[:, d], label='GroundTruth', linewidth=2)
+        axs[d // col, d % col].legend()
+        axs[d // col, d % col].set_title(f'Dimension {d+1}')
+    
+    if name is not None:
+        print(f'save img to {name}')
+        plt.savefig(name, bbox_inches='tight')
+    plt.show()
+
+def plot(target, forecast, prediction_length=192, dim=7, prediction_intervals=(50.0, 90.0), color='g', fname=None):
     # forecast: (100, 192, 8), target: (192, 8)
     pred_mean = np.mean(forecast, axis=0)   # (192, 8)
     pred_5 = np.percentile(forecast, 5, axis=0)
@@ -96,32 +115,30 @@ def plot(target, forecast, prediction_length=192, dim=16, prediction_intervals=(
     pred_50 = np.percentile(forecast, 50, axis=0)
     pred_75 = np.percentile(forecast, 75, axis=0)
     pred_95 = np.percentile(forecast, 95, axis=0)
-    row = math.ceil(dim / 4)
-    col = 4
+    col = 3
+    row = math.ceil(dim / col)
 
-    # 创建子图
     fig, axs = plt.subplots(row, col, figsize=(16, 12))
 
-    # 绘制每个维度的图
+    # draw img for each dimension
     for d in range(dim):
-        # 90% 分位数的色块（更深的颜色）
+        # 90% quantile interval
         axs[d // col, d % col].fill_between(np.arange(prediction_length), 
                                         pred_5[:, d], 
                                         pred_95[:, d], 
                                         color='lightgreen', alpha=0.5, label='90% Interval')
         
-        # 50% 分位数的色块（更浅的颜色）
+        # 50% quantile interval
         axs[d // col, d % col].fill_between(np.arange(prediction_length), 
                                         pred_25[:, d], 
                                         pred_75[:, d], 
                                         color='darkgreen', alpha=0.5, label='50% Interval')
         
-        # 绘制预测均值
-        axs[d // col, d % col].plot(pred_mean[:, d], color='black', label='Pred Mean')
+        # mean
+        axs[d // col, d % col].plot(pred_mean[:, d], color='black', label='Pred Mean', linewidth=2)
         
-        # 绘制真实值
-        axs[d // col, d % col].plot(target[:, d], color='red', label='True')
-        
+        # ground truth
+        axs[d // col, d % col].plot(target[:, d], color='red', label='True', linewidth=2)
         axs[d // col, d % col].legend()
         axs[d // col, d % col].set_title(f'Dimension {d+1}')
     plt.tight_layout()
@@ -129,3 +146,22 @@ def plot(target, forecast, prediction_length=192, dim=16, prediction_intervals=(
         print(f'save img to {fname}')
         plt.savefig(fname)
     plt.show()
+
+def loss_weight_linear_schedule(epoch, start_epoch=0, end_epoch=199, k_z_initial=1, k_z_final=0.01):
+    if epoch <= start_epoch:
+        return k_z_initial
+    elif epoch > end_epoch:
+        return k_z_final
+    else:
+        return k_z_initial - (k_z_initial - k_z_final) * (epoch - start_epoch) / (end_epoch - start_epoch) 
+
+def loss_weight_exp_schedule(epoch, start_epoch=0, end_epoch=199, k_z_initial=1, k_z_final=0.01):
+    if epoch <= start_epoch:
+        return k_z_initial
+    elif epoch > end_epoch:
+        return k_z_final
+    else:
+        alpha = np.log(k_z_initial / k_z_final) / (end_epoch - start_epoch)
+        l = - np.log(k_z_initial) / alpha
+        decay = np.exp(-alpha * (epoch - start_epoch + l))
+        return decay

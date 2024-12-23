@@ -1,7 +1,8 @@
 import argparse
 import torch
-from model9_NS_transformer.exp.exp_main import Exp_Main
-from model9_NS_transformer.exp.exp_res_diffusion import Exp_Main_ResDiffusion
+# TODO: use which exp: pro: don't save all preds, only five
+from model9_NS_transformer.exp.exp_main_pro import Exp_Main
+from model9_NS_transformer.exp.exp_res_diffusion_test_pro import Exp_Main_ResDiffusion
 import random
 import numpy as np
 import setproctitle
@@ -58,9 +59,9 @@ if __name__ == '__main__':
 
     parser.add_argument('--k_z', type=float, default=1e-2, help='KL weight 1e-9')
     parser.add_argument('--k_cond', type=float, default=1, help='Condition weight')
+    parser.add_argument('--k_cond_schedule', type=str, default=None, help='Condition weight schedule')
     parser.add_argument('--d_z', type=int, default=8, help='KL weight')
-
-
+    
     # optimization
     parser.add_argument('--num_workers', type=int, default=4, help='data loader num workers')
     parser.add_argument('--itr', type=int, default=1, help='experiments times')
@@ -105,12 +106,18 @@ if __name__ == '__main__':
     parser.add_argument('--timesteps', type=int, default=1000, help='args in diffuMTS')
     parser.add_argument('--diffusion_steps', type=int, default=1000, help='true diffusion steps in evaluation, keep it = timesteps normally')
 
+    # iTransformer args
+    parser.add_argument('--use_norm', type=int, default=True, help='use norm and denorm')
+    parser.add_argument('--class_strategy', type=str, default='projection', help='projection/average/cls_token')
+
     # exp args
     parser.add_argument('--pretrained_model_path', type=str, default=None, help='use pretrained TMDM model pth to do evaluation')
     parser.add_argument('--pretrained_cond_model_path', type=str, default=None, help='use pretrained cond_pred_model pth to do evaluation')
     parser.add_argument('--not_training', action='store_true', help='not training')
     parser.add_argument('--use_res_diffusion', action='store_true', help='use res_diffusion')
-
+    parser.add_argument('--save_five_pred_only', action='store_true', help='for some large datasets, only save the first batch pred')
+    parser.add_argument('--freeze_cond_model_path', type=str, default=None, help='use freeze pretrained iTransformer as cond_pred_model')
+    parser.add_argument('--freeze_cond_model', action='store_true', help='freeze the gradient of cond_pred_model when training diffusion model')
 
     args = parser.parse_args()
     args.is_training = args.is_training and not args.not_training

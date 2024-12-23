@@ -1,0 +1,22 @@
+model_name=iTransformer
+python run_former.py \
+        --model_id 'ETTh2_96_192' \
+        --model $model_name \
+        --root_path './dataset/ETT-small/' \
+        --data_path 'ETTh2.csv' \
+        --data 'ETTh2' \
+        --gpu '4' \
+        --seq_len 96 \
+        --label_len 48 \
+        --pred_len 192 \
+        --train_epochs 50 \
+        --gpu 6 \
+        --features 'M' \
+        --e_layers 2 \
+        --d_layers 1 \
+        --factor 3 \
+        --enc_in 7 \
+        --dec_in 7 \
+        --c_out 7 \
+        --n_heads 8 \
+        --is_training 1 \

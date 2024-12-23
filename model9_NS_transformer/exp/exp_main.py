@@ -1,6 +1,6 @@
 from data_provider.data_factory import data_provider
 
-from utils.tools import EarlyStopping, plot
+from utils.tools import EarlyStopping, plot, loss_weight_linear_schedule, loss_weight_exp_schedule
 from utils.metrics import metric
 
 from model9_NS_transformer.ns_models import ns_Transformer
@@ -130,7 +130,7 @@ class Exp_Main(Exp_Basic):
                         t = torch.cat([t, num_timesteps - 1 - t], dim=0)[:n] # (32,)
                         # calculate diffusion mean (transformer)
                         _, y_0_hat_batch, KL_loss, z_sample = self.cond_pred_model(batch_x, batch_x_mark, dec_inp,
-                                                                             batch_y_mark)
+                                                                             batch_y_mark)  # (32, 240, 7)
                         # calculate transformer loss
                         loss_vae = log_normal(batch_y, y_0_hat_batch, torch.from_numpy(np.array(1)))
 
@@ -189,6 +189,12 @@ class Exp_Main(Exp_Basic):
 
             # Training the diffusion part
             epoch_time = time.time()
+            if self.args.k_cond_schedule is None:
+                k_cond = self.args.k_cond
+            elif self.args.k_cond_schedule == 'linear':
+                k_cond = loss_weight_linear_schedule(epoch, start_epoch=0, end_epoch=self.args.train_epochs, k_cond_initial=1.3, k_cond_final=0.7)
+            elif self.args.kcond_schedule == 'exp':
+                k_cond = loss_weight_exp_schedule(epoch, start_epoch=0, end_epoch=self.args.train_epochs, k_z_initial=1.3, k_z_final=0.7)
 
             iter_count = 0
             train_loss = []
@@ -252,7 +258,7 @@ class Exp_Main(Exp_Basic):
                         output = self.model(batch_x, batch_x_mark, batch_y, y_t_batch, y_0_hat_batch, t)    # (32, 240, 7)
 
                         # loss = (e[:, -self.args.pred_len:, :] - output[:, -self.args.pred_len:, :]).square().mean()
-                        loss = (e - output).square().mean() + self.args.k_cond*loss_vae_all # 1 diffusion loss , 2 transformer loss
+                        loss = (e - output).square().mean() + k_cond * loss_vae_all # 1 diffusion loss , 2 transformer loss
                         loss = loss.mean()
                         train_loss.append(loss.item())
 
@@ -330,7 +336,7 @@ class Exp_Main(Exp_Basic):
             return gen_y
 
         def compute_true_coverage_by_gen_QI(config, dataset_object, all_true_y, all_generated_y):
-            n_bins = config.testing.n_bins
+            n_bins = config.testing.n_bins  # 10
             quantile_list = np.arange(n_bins + 1) * (100 / n_bins)
             # compute generated y quantiles
             y_pred_quantiles = np.percentile(all_generated_y.squeeze(), q=quantile_list, axis=1)
@@ -371,7 +377,7 @@ class Exp_Main(Exp_Basic):
         if test:
             print('loading model')
             if self.args.pretrained_model_path is not None:
-                print('load pretrained model')
+                print('load pretrained model and cond model')
                 if not self.args.use_multi_gpu:
                     # use singel gpu
                     self.model.load_state_dict(torch.load(self.args.pretrained_model_path, map_location=self.device))
@@ -467,7 +473,7 @@ class Exp_Main(Exp_Basic):
 
                         f_dim = -1 if self.args.features == 'MS' else 0     # 0
                         outputs = outputs[:, :, -self.args.pred_len:, f_dim:]   # (8, 100, 192, 7)
-                        history_true = batch_y[:, :self.args.label_len, f_dim:].to(self.device).detach().cpu().numpy()
+                        history_true = batch_x.detach().cpu().numpy()
                         batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)      # (8, 192, 7)
                         batch_y = batch_y.detach().cpu().numpy()    # (8, 192, 7)
 
@@ -502,9 +508,15 @@ class Exp_Main(Exp_Basic):
         folder_path = './results/' + setting + '/'
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
-        np.save(folder_path + 'pred.npy', preds_save)
-        np.save(folder_path + 'true.npy', trues_save)
-        np.save(folder_path + 'history_true.npy', history_trues_save)
+        if not self.args.save_five_pred_only:
+            np.save(folder_path + 'pred.npy', preds_save)
+            np.save(folder_path + 'true.npy', trues_save)
+            np.save(folder_path + 'history_true.npy', history_trues_save)
+        else:
+            print('only save first five results')
+            np.save(folder_path + 'pred.npy', preds_save[:1, :5])
+            np.save(folder_path + 'true.npy', trues_save[:1, :5])
+            np.save(folder_path + 'history_true.npy', history_trues_save[:1, :5])
         plot(target=trues_save[0][0], forecast=preds_save[0][0], prediction_length=self.args.pred_len, 
              dim=4, fname=folder_path + 'img.png')
 
@@ -626,5 +638,4 @@ class Exp_Main(Exp_Basic):
             os.makedirs(folder_path)
 
         np.save(folder_path + 'real_prediction.npy', preds)
-
         return

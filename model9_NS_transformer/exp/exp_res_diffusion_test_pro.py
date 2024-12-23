@@ -6,7 +6,9 @@ from utils.metrics import metric
 from model9_NS_transformer.ns_models import ns_Transformer
 from model9_NS_transformer.exp.exp_basic import Exp_Basic
 from model9_NS_transformer.diffusion_models import diffuMTS
-from model9_NS_transformer.diffusion_models.diffusion_utils import *
+# TODO change diffsuion_utils to diffusion_utils_1 -> not record every step prediction -> only y_0
+from model9_NS_transformer.diffusion_models.diffusion_utils_1 import *
+from model_Former.model import iTransformer
 
 import numpy as np
 import torch
@@ -25,11 +27,13 @@ import datetime
 warnings.filterwarnings('ignore')
 
 def ccc(id, pred, true):
-    print(id, datetime.datetime.now())
+    if id% 800 == 0:
+        print(id, datetime.datetime.now())
+    # print(id, datetime.datetime.now())
     res_box = np.zeros(len(true))
-    for i in range(len(true)):
-        res = pscore(pred[i], true[i]).compute()
-        res_box[i] = res[0]
+    for num in range(len(true)):
+        res = pscore(pred[num], true[num]).compute()
+        res_box[num] = res[0]
     return res_box
 
 
@@ -63,13 +67,17 @@ class Exp_Main_ResDiffusion(Exp_Basic):
         model = diffuMTS.Model(self.args, self.device).float()
         # model = Transformer.Model(self.args).float()
 
-        #NOTE if not training, load pretrained TMDM model
-        # if not self.args.is_training:
-        #     if self.args.pretrained_model_path is not None:
-        #         model.load_state_dict(torch.load(self.args.pretrained_model_path))
-
-        cond_pred_model = ns_Transformer.Model(self.args).float()
-        cond_pred_model_train = ns_Transformer.Model(self.args).float()
+        if self.args.freeze_cond_model_path is not None:
+            print('use freeze iTransformer as conditional model')
+            cond_pred_model = iTransformer.Model(self.args).float()
+            cond_pred_model.load_state_dict(torch.load(self.args.freeze_cond_model_path, map_location=self.device))
+            cond_pred_model_train = iTransformer.Model(self.args).float()
+            if self.args.freeze_cond_model:
+                for param in cond_pred_model.parameters():
+                    param.requires_grad = False
+        else:
+            cond_pred_model = ns_Transformer.Model(self.args).float()
+            cond_pred_model_train = ns_Transformer.Model(self.args).float()
 
         if self.args.use_multi_gpu and self.args.use_gpu:
             model = nn.DataParallel(model, device_ids=self.args.device_ids)
@@ -96,7 +104,7 @@ class Exp_Main_ResDiffusion(Exp_Basic):
         criterion = nn.MSELoss()
         return criterion
 
-    def vali(self, vali_data, vali_loader, criterion):
+    def vali(self, vali_data, vali_loader, criterion, k_cond=None):
         total_loss = []
         self.model.eval()
         self.cond_pred_model.eval()
@@ -128,13 +136,22 @@ class Exp_Main_ResDiffusion(Exp_Basic):
                             low=0, high=num_timesteps, size=(n // 2 + 1,)
                         ).to(self.device)   # (17,)
                         t = torch.cat([t, num_timesteps - 1 - t], dim=0)[:n] # (32,)
-                        # calculate diffusion mean (transformer)
-                        _, y_0_hat_batch, KL_loss, z_sample = self.cond_pred_model(batch_x, batch_x_mark, dec_inp,
-                                                                             batch_y_mark)
-                        # calculate transformer loss
-                        loss_vae = log_normal(batch_y, y_0_hat_batch, torch.from_numpy(np.array(1)))
 
-                        loss_vae_all = loss_vae + self.args.k_z * KL_loss
+                        if self.args.freeze_cond_model_path is not None:
+                            y_0_hat_batch = self.cond_pred_model(batch_x, batch_x_mark, dec_inp, batch_y_mark)  # (32, 192, 7)
+                            y_0_hat_batch = torch.cat([batch_y[:, :self.args.label_len, :], y_0_hat_batch], dim=1).float().to(self.device)
+                            # loss_vae_all = 0
+                            # if self.args.freeze_cond_model:
+                            #     loss_vae_all = 0
+                            # else:
+                            #     loss_vae_all = log_normal(batch_y, y_0_hat_batch, torch.from_numpy(np.array(1)))
+                        else:
+                            # calculate diffusion mean (transformer)
+                            _, y_0_hat_batch, KL_loss, z_sample = self.cond_pred_model(batch_x, batch_x_mark, dec_inp,
+                                                                                batch_y_mark)  # (32, 240, 7)
+                            # calculate transformer loss
+                            loss_vae = log_normal(batch_y, y_0_hat_batch, torch.from_numpy(np.array(1)))
+                            loss_vae_all = loss_vae + self.args.k_z * KL_loss
                         # y_0_hat_batch = z_sample
 
                         # y_T_mean = y_0_hat_batch    # (32, 240, 7)
@@ -150,10 +167,13 @@ class Exp_Main_ResDiffusion(Exp_Basic):
                                              one_minus_alphas_bar_sqrt, t, noise=e)  # (32, 240, 7)
                         output = self.model(batch_x, batch_x_mark, res_batch_y, y_t_batch, y_0_hat_batch, t)    # epsilon theta (32, 240, 7)
 
-                        loss = (e[:, -self.args.pred_len:, :] - output[:, -self.args.pred_len:, :]).square().mean() + self.args.k_cond * loss_vae_all
-                loss = loss.detach().cpu()
+                        if self.args.freeze_cond_model_path is not None:
+                            #  loss = (1-k_cond) * (e[:, -self.args.pred_len:, :] - output[:, -self.args.pred_len:, :]).square().mean() + k_cond * loss_vae_all
+                            loss = (e[:, -self.args.pred_len:, :] - output[:, -self.args.pred_len:, :]).square().mean()
+                        else:
+                            loss = (e[:, -self.args.pred_len:, :] - output[:, -self.args.pred_len:, :]).square().mean() + k_cond * loss_vae_all
 
-                total_loss.append(loss)
+                total_loss.append(loss.item())
         # after all valid batches
         total_loss = np.average(total_loss)
         self.model.train()
@@ -178,25 +198,23 @@ class Exp_Main_ResDiffusion(Exp_Basic):
 
         train_steps = len(train_loader) # 372
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
-
-
         model_optim = self._select_optimizer()
-
-
         criterion = self._select_criterion()    # MSELoss
-
         if self.args.use_amp:
             scaler = torch.cuda.amp.GradScaler()
+        
+        print('use common loss schedule') if self.args.k_cond_schedule is None else print(f'use {self.args.k_cond_schedule} loss schedule')
 
         for epoch in range(self.args.train_epochs):
+
             # Training the diffusion part
             epoch_time = time.time()
             if self.args.k_cond_schedule is None:
                 k_cond = self.args.k_cond
             elif self.args.k_cond_schedule == 'linear': # TODO: change the k cond initial
-                k_cond = loss_weight_linear_schedule(epoch, start_epoch=0, end_epoch=self.args.train_epochs, k_cond_initial=2, k_cond_final=0.01)
+                k_cond = loss_weight_linear_schedule(epoch, start_epoch=0, end_epoch=self.args.train_epochs, k_cond_initial=0.1, k_cond_final=0.01)
             elif self.args.kcond_schedule == 'exp':
-                k_cond = loss_weight_exp_schedule(epoch, start_epoch=0, end_epoch=self.args.train_epochs, k_z_initial=2, k_z_final=0.01)
+                k_cond = loss_weight_exp_schedule(epoch, start_epoch=0, end_epoch=self.args.train_epochs, k_z_initial=0.1, k_z_final=0.01)
 
             iter_count = 0
             train_loss = []
@@ -239,13 +257,21 @@ class Exp_Main_ResDiffusion(Exp_Basic):
                         ).to(self.device)   # (17,)
                         t = torch.cat([t, num_timesteps - 1 - t], dim=0)[:n] # (32,)
                         # y_0_hat_batch (32, 240, 7), z_sample: (32, 96, 512)
-                        _, y_0_hat_batch, KL_loss, z_sample = self.cond_pred_model(batch_x, batch_x_mark, dec_inp,
+                        if self.args.freeze_cond_model_path is not None:
+                            y_0_hat_batch = self.cond_pred_model(batch_x, batch_x_mark, dec_inp, batch_y_mark)  # (32, 192, 7)
+                            y_0_hat_batch = torch.cat([batch_y[:, :self.args.label_len, :], y_0_hat_batch], dim=1).float().to(self.device)
+                            # if self.args.freeze_cond_model:
+                            #     loss_vae_all = 0
+                            # else:
+                            #     loss_vae_all = log_normal(batch_y, y_0_hat_batch, torch.from_numpy(np.array(1)))
+                        else:
+                            _, y_0_hat_batch, KL_loss, z_sample = self.cond_pred_model(batch_x, batch_x_mark, dec_inp,
                                                                              batch_y_mark)
-                        # batch_y (32, 240, 7), y_0_hat_batch (32, 240, 7)
-                        loss_vae = log_normal(batch_y, y_0_hat_batch, torch.from_numpy(np.array(1)))
+                            # batch_y (32, 240, 7), y_0_hat_batch (32, 240, 7)
+                            loss_vae = log_normal(batch_y, y_0_hat_batch, torch.from_numpy(np.array(1)))
 
-                        loss_vae_all = loss_vae + self.args.k_z * KL_loss
-                        # y_0_hat_batch = z_sample
+                            loss_vae_all = loss_vae + self.args.k_z * KL_loss
+                            # y_0_hat_batch = z_sample
 
                         e = torch.randn_like(batch_y).to(self.device)   # (32, 240, 7)
                         y_T_mean = torch.zeros_like(y_0_hat_batch)
@@ -261,7 +287,11 @@ class Exp_Main_ResDiffusion(Exp_Basic):
                         output = self.model(batch_x, batch_x_mark, res_batch_y, y_t_batch, y_0_hat_batch, t)    # (32, 240, 7)
 
                         # loss = (e[:, -self.args.pred_len:, :] - output[:, -self.args.pred_len:, :]).square().mean()
-                        loss = (e - output).square().mean() + k_cond * loss_vae_all # 1 diffusion loss , 2 transformer loss
+                        if self.args.freeze_cond_model_path is not None:
+                            # loss = (1-k_cond) * (e - output).square().mean() + k_cond * loss_vae_all
+                            loss = (e - output).square().mean()
+                        else:
+                            loss = (e - output).square().mean() + k_cond * loss_vae_all # 1 diffusion loss , 2 transformer loss
                         loss = loss.mean()
                         train_loss.append(loss.item())
 
@@ -285,8 +315,8 @@ class Exp_Main_ResDiffusion(Exp_Basic):
             # one epoch finished            
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
             train_loss = np.average(train_loss) # compute mean of all batch losses in one epoch
-            vali_loss = self.vali(vali_data, vali_loader, criterion)
-            test_loss = self.vali(test_data, test_loader, criterion)
+            vali_loss = self.vali(vali_data, vali_loader, criterion, k_cond=k_cond)
+            test_loss = self.vali(test_data, test_loader, criterion, k_cond=k_cond)
 
 
             print(
@@ -362,17 +392,44 @@ class Exp_Main_ResDiffusion(Exp_Basic):
                 np.sum(y_true_ratio_by_bin) - 1) < 1e-10, "Sum of quantile coverage ratios shall be 1!"
             qice_coverage_ratio = np.absolute(np.ones(n_bins) / n_bins - y_true_ratio_by_bin).mean()
             return y_true_ratio_by_bin, qice_coverage_ratio, y_true
+        
+        def compute_QICE(all_true_y, all_generated_y, dataset_object=0, y_true_quantile_bin_count_sum=0):
+            # all_true_y: (688128, 100) , all_generated_y: (688128, 1)
+            dataset_object +=all_true_y.shape[0]
+            n_bins = 10
+            quantile_list = np.arange(n_bins + 1) * (100 / n_bins)  # array([  0.,  10.,  20.,  30.,  40.,  50.,  60.,  70.,  80.,  90., 100.])
+            # compute generated y quantiles
+            y_pred_quantiles = np.percentile(all_generated_y.squeeze(), q=quantile_list, axis=1)    # (11, 688128)
+            y_true = all_true_y.T   # (1, 688128)
+            quantile_membership_array = ((y_true - y_pred_quantiles) > 0).astype(int)   # (11, 688128)
+            y_true_quantile_membership = quantile_membership_array.sum(axis=0)  # (688128,)  [7, 2, 6, ..., 8, 9, 4], min:0, max:11
+            # y_true_quantile_bin_count = np.bincount(y_true_quantile_membership)  -> array([ 65422, 101242,  61711,  53008,  63884,  87083,  65635,  58612, 51925,  37671,  29083,  12852])
+            y_true_quantile_bin_count = np.array( # [0, 1, 2, ..., 11]
+                [(y_true_quantile_membership == v).sum() for v in np.arange(n_bins + 2)])   # (12,) count total number for every quantile interval 
 
-        def compute_PICP(config, y_true, all_gen_y, return_CI=False):
+            # combine true y falls outside of 0-100 gen y quantile to the first and last interval
+            y_true_quantile_bin_count[1] += y_true_quantile_bin_count[0]
+            y_true_quantile_bin_count[-2] += y_true_quantile_bin_count[-1]
+            y_true_quantile_bin_count_ = y_true_quantile_bin_count[1:-1]    # (12,) -> (10,)
+            y_true_quantile_bin_count_sum += y_true_quantile_bin_count_
+            # compute true y coverage ratio for each gen y quantile interval
+            # array([0.24219913, 0.08967954, 0.07703218, 0.09283738, 0.12655058, 0.09538196, 0.08517601, 0.07545834, 0.05474418, 0.0609407 ])
+            y_true_ratio_by_bin = y_true_quantile_bin_count_sum / dataset_object   
+            assert np.abs(
+                np.sum(y_true_ratio_by_bin) - 1) < 1e-10, "Sum of quantile coverage ratios shall be 1!"
+            qice_coverage_ratio = np.absolute(np.ones(n_bins) / n_bins - y_true_ratio_by_bin).mean()    # 0.03374994187127976
+            return y_true_ratio_by_bin, qice_coverage_ratio, y_true, dataset_object, y_true_quantile_bin_count_sum
+
+        def compute_PICP(y_true, all_gen_y, return_CI=False):
             """
             Another coverage metric.
-            all_true_y: (411*8*192*7, 1), all_generated_y: (411*8*192*7, 100)
+            all_true_y: (64*8*192*7, 1), all_generated_y: (64*8*192*7, 100)
             """
-            low, high = config.testing.PICP_range
-            CI_y_pred = np.percentile(all_gen_y.squeeze(), q=[low, high], axis=1)   # (411*8*192*7, 100)-> (2, 411*8*192*7)
+            low, high = [2.5, 97.5]
+            CI_y_pred = np.percentile(all_gen_y.squeeze(), q=[low, high], axis=1)   # (64*8*192*7, 100)-> (2, 64*8*192*7)
             # compute percentage of true y in the range of credible interval
-            y_in_range = (y_true >= CI_y_pred[0]) & (y_true <= CI_y_pred[1])    # （411*8*192*7，）
-            coverage = y_in_range.mean()    # sum/ 411*8*192*7
+            y_in_range = (y_true >= CI_y_pred[0]) & (y_true <= CI_y_pred[1])    # （64*8*192*7，）
+            coverage = y_in_range.mean()    # sum/ 64*8*192*7
             if return_CI:
                 return coverage, CI_y_pred, low, high
             else:
@@ -382,7 +439,7 @@ class Exp_Main_ResDiffusion(Exp_Basic):
         if test:
             print('loading model')
             if self.args.pretrained_model_path is not None:
-                print('load pretrained model')
+                print('load pretrained model and cond model')
                 if not self.args.use_multi_gpu:
                     self.model.load_state_dict(torch.load(self.args.pretrained_model_path, map_location=self.device))
                     self.cond_pred_model.load_state_dict(torch.load(self.args.pretrained_cond_model_path,
@@ -399,9 +456,12 @@ class Exp_Main_ResDiffusion(Exp_Basic):
                                                                             'best_cond_model_dir') + '/' + 'checkpoint.pth',
                                                                 map_location=self.device))  # need to set device: "cuda:0"
 
-        preds = []
-        trues = []
-        history_trues = []
+        preds_save_final = []
+        trues_save_final = []
+        history_trues_save_final = []
+        coverage_list, dataset_object, y_true_quantile_bin_count_sum = [], 0, 0
+        CRPS_list, CRPS_sum_list = [], []
+        mae_list, mse_list, rmse_list, mape_list, mspe_list = [], [], [], [], []
         folder_path = './test_results/' + setting + '/'
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
@@ -415,7 +475,7 @@ class Exp_Main_ResDiffusion(Exp_Basic):
         model_args = get_attribute('args')
         diffusion_config = get_attribute('diffusion_config')
         with torch.no_grad():
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(test_loader):
+            for test_i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(test_loader):
                 gen_y_by_batch_list = [[] for _ in range(diffusion_steps + 1)]
                 y_se_by_batch_list = [[] for _ in range(diffusion_steps + 1)]
 
@@ -441,7 +501,11 @@ class Exp_Main_ResDiffusion(Exp_Basic):
                         outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
 
                     else:
-                        _, y_0_hat_batch, _, z_sample = self.cond_pred_model(batch_x, batch_x_mark, dec_inp,
+                        if self.args.freeze_cond_model_path is not None:
+                            y_0_hat_batch = self.cond_pred_model(batch_x, batch_x_mark, dec_inp, batch_y_mark)  # (32, 192, 7)
+                            y_0_hat_batch = torch.cat([batch_y[:, :self.args.label_len, :], y_0_hat_batch], dim=1).float().to(self.device)
+                        else:
+                            _, y_0_hat_batch, _, z_sample = self.cond_pred_model(batch_x, batch_x_mark, dec_inp,
                                                                              batch_y_mark)  # y_0_hat_batch: (8, 240, 7), z_sample (9, 96, 512)
                         # sample num: repeat_n = 100
                         repeat_n = int(
@@ -471,114 +535,148 @@ class Exp_Main_ResDiffusion(Exp_Basic):
                                 # res diffusion
                                 y_tile_seq = [y + y_0_hat_tile for y in y_tile_seq]
 
-                            gen_y = store_gen_y_at_step_t(config=model_args,
-                                                          config_diff=diffusion_config,
-                                                          idx=diffusion_steps, y_tile_seq=y_tile_seq)  # (8, 100, 240, 7)
+                            # TODO change gen_y, only store the last step y_0
+                            # gen_y = store_gen_y_at_step_t(config=model_args,
+                            #                               config_diff=diffusion_config,
+                            #                               idx=diffusion_steps, y_tile_seq=y_tile_seq)  # (8, 100, 240, 7)
+                            gen_y = y_tile_seq[-1].reshape(model_args.test_batch_size,
+                                            int(diffusion_config.testing.n_z_samples / diffusion_config.testing.n_z_samples_depart),
+                                            (model_args.label_len + model_args.pred_len),
+                                            model_args.c_out).cpu().numpy()
                             gen_y_box.append(gen_y)
                         outputs = np.concatenate(gen_y_box, axis=1) # (8, 100, 240, 7)
 
                         f_dim = -1 if self.args.features == 'MS' else 0     # 0
                         outputs = outputs[:, :, -self.args.pred_len:, f_dim:]   # (8, 100, 192, 7)
-                        history_true = batch_y[:, :self.args.label_len, f_dim:].to(self.device).detach().cpu().numpy()
+                        history_true = batch_x.detach().cpu().numpy()
                         batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)      # (8, 192, 7)
                         batch_y = batch_y.detach().cpu().numpy()    # (8, 192, 7)
 
                         pred = outputs  # outputs.detach().cpu().numpy()  # .squeeze() # (8, 100, 192, 7)
                         true = batch_y  # batch_y.detach().cpu().numpy()  # .squeeze()   # (8, 192, 7)
 
-                        preds.append(pred)
-                        trues.append(true)
-                        history_trues.append(history_true)
+                        # below we compute metrics, without saving total preds
+                        preds = np.array(pred)     # (8, 100, 192, 7)
+                        trues = np.array(true)  # (8, 192, 7)
+                        history_trues = np.array(history_true)  # (8, 96, 7)
+
+                        if test_i<5: # save the first 5 batch preds, trues, history_trues
+                            preds_save_final.append(preds)
+                            trues_save_final.append(trues)
+                            history_trues_save_final.append(history_trues)
+                        
+                        preds = np.expand_dims(preds, axis=0)   # (1, 8, 100, 192, 7)
+                        trues = np.expand_dims(trues, axis=0)   # (1, 8, 192, 7)
+                        preds_save = preds
+                        trues_save = trues
+
+                        # calculate preds mean
+                        preds_ns = np.mean(preds, axis=2)   # (1, 8, 100, 192, 7) -> # (1, 8, 192, 7)
+                        preds_ns = preds_ns.reshape(-1, preds_ns.shape[-2], preds_ns.shape[-1]) # (1, 8, 192, 7) -> (1*8, 192, 7)
+                        trues_ns = trues.reshape(-1, trues.shape[-2], trues.shape[-1])   # (1*8, 192, 7)
+                        mae, mse, _ , mape, mspe = metric(preds_ns, trues_ns)
+                        mae_list.append(mae)
+                        mse_list.append(mse)
+                        # rmse_list.append(rmse)
+                        mape_list.append(mape)
+                        mspe_list.append(mspe)
+
+                        # reshape
+                        preds = preds.reshape(-1, preds.shape[-3], preds.shape[-2] * preds.shape[-1])   # (1, 8, 100, 192, 7) -> (1*8, 100, 192*7)
+                        preds = preds.transpose(0, 2, 1)    # (1*8, 192*7, 100)
+                        preds = preds.reshape(-1, preds.shape[-1])      # (1*8*192*7, 100)
+
+                        trues = trues.reshape(-1, 1, trues.shape[-2] * trues.shape[-1])   
+                        trues = trues.transpose(0, 2, 1)    
+                        trues = trues.reshape(-1, trues.shape[-1])      # (1*8*192*7, 1)
+
+                        # calculate picp
+                        coverage, _, _ = compute_PICP(y_true=trues.T, all_gen_y=preds)
+                        coverage_list.append(coverage)
+
+                        # calculate qice
+                        y_true_ratio_by_bin, qice_coverage_ratio, y_true, dataset_object, y_true_quantile_bin_count_sum = compute_QICE(
+                        dataset_object=dataset_object, all_true_y=trues, all_generated_y=preds, y_true_quantile_bin_count_sum=y_true_quantile_bin_count_sum)
+
+                        # calculate CRPS
+                        pool = Pool(processes=8)
+                        all_res = []
+                        pred = preds_save.reshape(-1, preds_save.shape[-3], preds_save.shape[-2], preds_save.shape[-1])     # (8, 100, 192, 7)
+                        true = trues_save.reshape(-1, trues_save.shape[-2], trues_save.shape[-1])   # (8, 192, 7)
+                        for i in range(preds_save.shape[-1]): # Dimension 7
+                            p_in = pred[:, :, :, i]     # (8, 100, 192)
+                            p_in = p_in.transpose(0, 2, 1)  # (8, 192, 100)
+                            p_in = p_in.reshape(-1, p_in.shape[-1]) # (8*192, 100)
+                            t_in = true[:, :, i]    # (8, 192)
+                            t_in = t_in.reshape(-1) # (8 * 192,)
+                            all_res.append(pool.apply_async(ccc, args=(i, p_in, t_in))) # p_in (512*192, 100), t_in (512 * 192,)
+                        p_in = np.sum(pred, axis=-1)    # (8, 100, 192, 7) -> (8, 100, 192)
+                        p_in = p_in.transpose(0, 2, 1)  # (8, 192, 100)
+                        p_in = p_in.reshape(-1, p_in.shape[-1]) # (8 * 192, 100)
+                        t_in = np.sum(true, axis=-1)    # (8 , 192)
+                        t_in = t_in.reshape(-1) # (8 * 192,)
+                        CRPS_sum_f = pool.apply_async(ccc, args=(8, p_in, t_in))  # NOTE: calculate CRPS_sum  
+                        pool.close()
+                        pool.join()
+                        all_res_get = []
+                        for i in range(len(all_res)):   # Dimension 7
+                            all_res_get.append(all_res[i].get())
+                        all_res_get = np.array(all_res_get) # (7, 8*192)
+
+                        CRPS_0 = np.mean(all_res_get, axis=0).mean(axis=0)  # (1*8*192,)
+                        CRPS_list.append(CRPS_0)
+                        CRPS_sum_0 = CRPS_sum_f.get()   # (test_group_size * 8 * 192)
+                        CRPS_sum_list.append(CRPS_sum_0)
+
                 # after 5 batch
-                if i % 5 == 0 and i != 0:
+                if test_i % 5 == 0 and test_i != 0:
                     print('Testing: %d/%d cost time: %f min' % (
-                        i, len(test_loader), (time.time() - minibatch_sample_start) / 60))
+                        test_i, len(test_loader), (time.time() - minibatch_sample_start) / 60))
                     minibatch_sample_start = time.time()
 
         # after all test batches
-        preds = np.array(preds)     # (411, 8, 100, 192, 7)
-        trues = np.array(trues)     # (411, 8, 192, 7)
-        history_trues = np.array(history_trues)
-
-        preds_save = np.array(preds)
-        trues_save = np.array(trues)
-        history_trues_save = np.array(history_trues)
-
-        preds_ns = np.array(preds).mean(axis=2)     # (411, 8, 192, 7)
-        print('test shape:', preds_ns.shape, trues.shape)
-        preds_ns = preds_ns.reshape(-1, preds_ns.shape[-2], preds_ns.shape[-1])     # (3288, 192, 7)
-        trues_ns = trues.reshape(-1, trues.shape[-2], trues.shape[-1])      # (3288, 192, 7)
-        print('test shape:', preds_ns.shape, trues_ns.shape)
-
+        
         # result save
         folder_path = './results/' + setting + '/'
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
-        if not self.args.save_five_pred_only:
-            np.save(folder_path + 'pred.npy', preds_save)
-            np.save(folder_path + 'true.npy', trues_save)
-            np.save(folder_path + 'history_true.npy', history_trues_save)
-        else:
-            print('only save first five results')
-            np.save(folder_path + 'pred.npy', preds_save[:1, :5])
-            np.save(folder_path + 'true.npy', trues_save[:1, :5])
-            np.save(folder_path + 'history_true.npy', history_trues_save[:1, :5])
-        plot(target=trues_save[0][0], forecast=preds_save[0][0], prediction_length=self.args.pred_len, 
-             dim=4, fname=folder_path + 'img.png')
+        np.save(folder_path + 'pred_5.npy', preds_save_final)
+        np.save(folder_path + 'true_5.npy', trues_save_final)
+        np.save(folder_path + 'history_true_5.npy', history_trues_save_final)
 
-        # compute all metrics
-        mae, mse, rmse, mape, mspe = metric(preds_ns, trues_ns)
-        print('NT metrc: mse:{:.4f}, mae:{:.4f} , rmse:{:.4f}, mape:{:.4f}, mspe:{:.4f}'.format(mse, mae, rmse, mape,
-                                                                                                mspe))
-        preds = preds.reshape(-1, preds.shape[-3], preds.shape[-2] * preds.shape[-1])   # (411, 8, 100, 192, 7) -> (411*8, 100, 192*7)
-        preds = preds.transpose(0, 2, 1)    # (3288, 1344, 100)
-        preds = preds.reshape(-1, preds.shape[-1])      # (4419072, 100): (411*8*192*7, 100)
+        target = np.concatenate((history_trues_save_final[0][0], trues_save_final[0][0]), axis=0)
+        history_plot = history_trues_save_final[0][0]
+        history_plot_repeat = np.repeat(history_plot.reshape(1, history_plot.shape[-2], history_plot.shape[-1]), 100, axis=0)
+        forecast = np.concatenate((history_plot_repeat, preds_save_final[0][0]), axis=1)
+        plot(target=target, forecast=forecast, prediction_length=self.args.pred_len + self.args.seq_len, 
+             dim=6, fname=folder_path + 'img.png')
 
-        trues = trues.reshape(-1, 1, trues.shape[-2] * trues.shape[-1])     # (3288, 1, 1344)
-        trues = trues.transpose(0, 2, 1)    # (3288, 1344, 1)
-        trues = trues.reshape(-1, trues.shape[-1])      # (4419072, 1): (411*8*192*7, 1)
-        y_true_ratio_by_bin, qice_coverage_ratio, y_true = compute_true_coverage_by_gen_QI(
-            config=diffusion_config, dataset_object=preds.shape[0],
-            all_true_y=trues, all_generated_y=preds, )  # (10,), 0.028394676529370878, (1, 4419072)
-
-        coverage, _, _ = compute_PICP(config=diffusion_config, y_true=y_true, all_gen_y=preds)   # 0.800069788408064
-        PICP, QICE = coverage, qice_coverage_ratio
-        print('CARD metrc: QICE:{:.4f}%, PICP:{:.4f}%'.format(QICE * 100, PICP * 100))
-
-        pred = preds_save.reshape(-1, preds_save.shape[-3], preds_save.shape[-2], preds_save.shape[-1])     # (3288, 100, 192, 7)
-        true = trues_save.reshape(-1, trues_save.shape[-2], trues_save.shape[-1])   # (8, 192, 7)
-
-        pool = Pool(processes=32)
-        all_res = []
-        for i in range(pred.shape[-1]):
-            p_in = pred[:, :, :, i]
-            p_in = p_in.transpose(0, 2, 1)
-            p_in = p_in.reshape(-1, p_in.shape[-1]) # (631296, 100)
-            t_in = true[:, :, i]
-            t_in = t_in.reshape(-1) # (631296,)
-            # print(i)
-            all_res.append(pool.apply_async(ccc, args=(i, p_in, t_in)))
-        p_in = np.sum(pred, axis=-1)    # (3288, 100, 192, 7) -> (3288, 100, 192)
-        p_in = p_in.transpose(0, 2, 1)
-        p_in = p_in.reshape(-1, p_in.shape[-1]) # (631296, 100)
-        t_in = np.sum(true, axis=-1)
-        t_in = t_in.reshape(-1) # (631296,)
-        CRPS_sum = pool.apply_async(ccc, args=(8, p_in, t_in))
-
-        pool.close()
-        pool.join()
-
-        all_res_get = []
-        for i in range(len(all_res)):
-            all_res_get.append(all_res[i].get())
-        all_res_get = np.array(all_res_get)
-
-        CRPS_0 = np.mean(all_res_get, axis=0).mean()
-        CRPS_sum = CRPS_sum.get()
-        CRPS_sum = CRPS_sum.mean()
-
-        print('CRPS', CRPS_0, 'CRPS_sum', CRPS_sum)
+        # compute all ns metrics
+        mse, mae, rmse, mape, mspe = np.mean(mse_list), np.mean(mae_list), np.sqrt(np.mean(mse_list)), np.mean(mape_list), np.mean(mspe_list)
+        print('NT metric: mse:{:.4f}, mae:{:.4f} , rmse:{:.4f}, mape:{:.4f}, mspe:{:.4f}'.format(mse, mae, rmse, mape, mspe))
         
+        # compute CARD metrics
+        PICP = np.mean(coverage_list)
+        print('calculate PICP each batch {:.4f}%'.format(PICP * 100))
+
+        QICE = qice_coverage_ratio
+        print('calculate QICE each batch {:.4f}%'.format(QICE * 100))
+
+        # compute CRPS, CRPS_sum
+        CRPS = np.mean([np.mean(CRPS_0) for CRPS_0 in CRPS_list])
+        CRPS_sum = np.mean(CRPS_sum_list)
+        print('CRPS', CRPS.mean(), '\n', 'CRPS_sum', CRPS_sum.mean())
+
+        # write metrics in txt file
+        f = open(os.path.join(folder_path, 'metrics.txt'), 'a')
+        f.write(setting + "  \n")
+        f.write('mse:{}, mae:{}, rmse:{}, mape:{}, mspe:{} \n'.format(mse, mae, rmse, mape, mspe))
+        f.write('PICP:{}, QICE:{} \n'.format(PICP * 100, QICE * 100))
+        f.write('CRPS:{}, CRPS_sum:{} \n'.format(CRPS.mean(), CRPS_sum.mean()))
+        f.write('\n')
+        f.write('\n')
+        f.close()
+
         # write metrics in txt file
         f = open("result.txt", 'a')
         f.write(f'datetime: {datetime.datetime.now()} \n')
@@ -590,12 +688,12 @@ class Exp_Main_ResDiffusion(Exp_Basic):
         f.write('\n')
         f.close()
 
-        np.save(folder_path + 'metrics.npy',
+        np.save(folder_path + 'metrics_new.npy',
                 np.array([mse, mae, rmse, mape, mspe, qice_coverage_ratio * 100, coverage * 100, CRPS_0, CRPS_sum]))
 
         # np.save("./results/{}.npy".format(self.args.model_id), np.array(mse))
-        np.save("./results/{}_Ntimes.npy".format(self.args.model_id),
-                np.array([mse, mae, rmse, mape, mspe, qice_coverage_ratio * 100, coverage * 100, CRPS_0, CRPS_sum]))
+        # np.save("./results/{}_Ntimes.npy_new".format(self.args.model_id),
+        #         np.array([mse, mae, rmse, mape, mspe, qice_coverage_ratio * 100, coverage * 100, CRPS_0, CRPS_sum]))
 
         return
 

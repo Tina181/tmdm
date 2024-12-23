@@ -2,7 +2,8 @@ import math
 import torch
 import numpy as np
 
-
+# TODO don't record y_p_seq for every prediction
+# change p_sample_loop, only record y_0
 def make_beta_schedule(schedule="linear", num_timesteps=1000, start=1e-5, end=1e-2):
     if schedule == "linear":
         betas = torch.linspace(start, end, num_timesteps)
@@ -123,12 +124,14 @@ def p_sample_loop(model, x, x_mark, y_0_hat, y_T_mean, n_steps, alphas, one_minu
     for t in reversed(range(1, n_steps)):  # t from T to 2
         y_t = cur_y
         cur_y = p_sample(model, x, x_mark, y_t, y_0_hat, y_T_mean, t, alphas, one_minus_alphas_bar_sqrt, use_multi_gpu)  # y_{t-1}
-        y_p_seq.append(cur_y)
-    assert len(y_p_seq) == n_steps
-    y_0 = p_sample_t_1to0(model, x, x_mark, y_p_seq[-1], y_0_hat, y_T_mean, one_minus_alphas_bar_sqrt, use_multi_gpu)
-    y_p_seq.append(y_0)
-    return y_p_seq
-
+        # y_p_seq.append(cur_y)
+        
+    # assert len(y_p_seq) == n_steps
+    # y_0 = p_sample_t_1to0(model, x, x_mark, y_p_seq[-1], y_0_hat, y_T_mean, one_minus_alphas_bar_sqrt, use_multi_gpu)
+    y_0 = p_sample_t_1to0(model, x, x_mark, cur_y, y_0_hat, y_T_mean, one_minus_alphas_bar_sqrt, use_multi_gpu)
+    # y_p_seq.append(y_0)
+    # return y_p_seq
+    return [y_0]
 
 # Evaluation with KLD
 def kld(y1, y2, grid=(-20, 20), num_grid=400):

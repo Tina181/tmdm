@@ -5,9 +5,13 @@ checkpoints/
 checkpoints_save1/
 log/
 log_pre/
+**log**
 dataset/
 results/
 results_save1/
 basic_time_series_datasets/
 paper_and_notes/
 **__pycache__**
+**result**
+**checkpoint**
+**pyc**
